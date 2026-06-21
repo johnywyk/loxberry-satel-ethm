@@ -1,0 +1,49 @@
+name: Bug report
+description: Zglos blad wtyczki SATEL ETHM Bridge
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Dzieki za zgloszenie. Nie wklejaj tokenow, kodow SATEL ani kluczy integracji.
+  - type: input
+    id: version
+    attributes:
+      label: Wersja wtyczki
+      placeholder: "0.22.0"
+    validations:
+      required: true
+  - type: input
+    id: loxberry
+    attributes:
+      label: Wersja LoxBerry
+      placeholder: "3.0.1.3"
+    validations:
+      required: true
+  - type: input
+    id: satel
+    attributes:
+      label: Centrala SATEL / ETHM
+      placeholder: "Integra 64 + ETHM-1 Plus"
+  - type: dropdown
+    id: encryption
+    attributes:
+      label: Kodowanie Integracji ETHM
+      options:
+        - Wylaczone
+        - Wlaczone
+        - Nie wiem
+  - type: textarea
+    id: problem
+    attributes:
+      label: Co sie dzieje?
+      description: Opisz objaw, oczekiwane zachowanie i kroki odtworzenia.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logi po usunieciu sekretow
+      render: text
+

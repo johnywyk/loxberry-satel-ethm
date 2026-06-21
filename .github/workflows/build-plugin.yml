@@ -1,0 +1,33 @@
+name: Build plugin
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Compile Python files
+        run: |
+          python3 -m py_compile bin/satel_ethm_bridge.py webfrontend/htmlauth/index.cgi webfrontend/html/control.cgi
+
+      - name: Build LoxBerry plugin ZIP
+        run: |
+          python3 scripts/build_plugin_zip.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: loxberry-satel-ethm-plugin
+          path: dist/*.zip
+

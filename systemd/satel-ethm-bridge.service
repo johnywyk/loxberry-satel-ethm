@@ -1,0 +1,14 @@
+[Unit]
+Description=SATEL ETHM Bridge for LoxBerry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SATEL_ETHM_CONFIG=/opt/loxberry/data/system/satel_ethm/config.json
+ExecStart=/opt/loxberry/bin/plugins/satel_ethm/satel_ethm_bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

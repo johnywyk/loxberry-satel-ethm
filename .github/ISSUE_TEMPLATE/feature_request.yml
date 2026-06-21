@@ -1,0 +1,21 @@
+name: Feature request
+description: Zaproponuj funkcje lub ulepszenie
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Jaki problem ma rozwiazac ta funkcja?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propozycja rozwiazania
+  - type: textarea
+    id: context
+    attributes:
+      label: Kontekst instalacji
+      description: Model centrali, ETHM, LoxBerry, Loxone Config, jesli ma znaczenie.
+

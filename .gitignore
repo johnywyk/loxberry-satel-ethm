@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+.DS_Store
+
+dist/
+tmp_control.xml
+
+# Local test configs and runtime files
+config.json
+runtime.json
+control_queue/
+
