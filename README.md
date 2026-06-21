@@ -11,9 +11,9 @@ and controlling bypass/blocking of zones.
 
 Polish documentation: [`docs/README_PL.md`](docs/README_PL.md)
 
-## Opis po polsku
+## 
 
-SATEL ETHM Bridge to nieoficjalna, społecznościowa wtyczka LoxBerry do integracji central SATEL INTEGRA przez ETHM z systemem Loxone.
+SATEL ETHM Bridge to nieoficjalna wtyczka LoxBerry do integracji central SATEL INTEGRA przez ETHM z systemem Loxone.
 
 Wtyczka odczytuje stany alarmu, uzbrojenia, awarii, wejść, wyjść, temperatur oraz diagnostyki, a następnie przekazuje je do Loxone przez UDP. Umożliwia również sterowanie alarmem z Loxone przez HTTP, m.in. uzbrajanie, rozbrajanie, kasowanie alarmu, sterowanie wyjściami oraz blokady wejść.
 
