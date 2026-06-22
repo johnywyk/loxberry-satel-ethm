@@ -67,6 +67,7 @@ defaults = {
     "mqtt_control_enabled": False,
     "loxberry_control_url": "http://LOXBERRY_IP/plugins/satel_ethm/control.cgi",
     "control_token": "",
+    "allowed_control_ips": "",
     "default_control_partition": 1,
     "control_confirm_enabled": True,
     "control_confirm_blocking": False,

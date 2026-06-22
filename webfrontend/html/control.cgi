@@ -24,7 +24,7 @@ LEGACY_CONFIG_FILES = [
     Path(f"/opt/loxberry/config/plugins/{PLUGIN}/config.json"),
 ]
 LOG_FILE = Path(f"/opt/loxberry/log/plugins/{PLUGIN}/satel_ethm_control.log")
-VERSION = "0.23.0"
+VERSION = "0.24.0"
 CONTROL_QUEUE_DIR = CONFIG_FILE.parent / "control_queue"
 
 RESULT_TEXT = {
@@ -87,6 +87,24 @@ def load_config():
                 break
     with source_file.open("r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def request_ip():
+    return (
+        os.environ.get("REMOTE_ADDR")
+        or os.environ.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+        or ""
+    )
+
+
+def split_ip_list(value):
+    normalized = str(value or "").replace(",", " ").replace(";", " ")
+    return [item.strip() for item in normalized.split() if item.strip()]
+
+
+def control_ip_allowed(config, remote_ip):
+    allowed = split_ip_list(config.get("allowed_control_ips", ""))
+    return not allowed or remote_ip in allowed
 
 
 def crc16(data):
@@ -510,8 +528,14 @@ def main():
     except Exception as exc:
         return fail(f"cannot load config: {exc}", "500 Internal Server Error")
 
+    remote_ip = request_ip()
+    if not control_ip_allowed(config, remote_ip):
+        log(f"REJECT forbidden ip={remote_ip} action={form.getfirst('action', '')}")
+        return fail("forbidden source ip", "403 Forbidden")
+
     token = str(config.get("control_token", ""))
     if token and form.getfirst("token", "") != token:
+        log(f"REJECT bad token ip={remote_ip} action={form.getfirst('action', '')}")
         return fail("bad token", "403 Forbidden")
 
     try:

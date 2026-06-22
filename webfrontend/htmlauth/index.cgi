@@ -21,7 +21,7 @@ LEGACY_CONFIG_FILES = [
 ]
 SERVICE_SCRIPT = Path(f"/opt/loxberry/bin/plugins/{PLUGIN}/satel_ethm_service.sh")
 SYSTEMD_SERVICE = "satel-ethm-bridge.service"
-VERSION = "0.23.0"
+VERSION = "0.24.0"
 CONTROL_QUEUE_DIR = CONFIG_FILE.parent / "control_queue"
 RUNTIME_FILE = CONFIG_FILE.parent / "runtime.json"
 
@@ -71,6 +71,7 @@ DEFAULT_CONFIG = {
     "mqtt_control_enabled": False,
     "loxberry_control_url": "http://LOXBERRY_IP/plugins/satel_ethm/control.cgi",
     "control_token": "",
+    "allowed_control_ips": "",
     "default_control_partition": 1,
     "control_confirm_enabled": True,
     "control_confirm_blocking": False,
@@ -114,6 +115,17 @@ DEFAULT_CONFIG = {
         "exit_time": "FE FE 0F D7 F1 FE 0D",
         "exit_time_short": "FE FE 10 D7 F2 FE 0D",
     },
+}
+
+COMMAND_FORM_FIELDS = {
+    "armed": "cmd_armed",
+    "alarm": "cmd_alarm",
+    "fire_alarm": "cmd_fire_alarm",
+    "alarm_memory": "cmd_alarm_memory",
+    "trouble": "cmd_trouble",
+    "entry_time": "cmd_entry_time",
+    "exit_time": "cmd_exit_time",
+    "exit_time_short": "cmd_exit_time_short",
 }
 
 
@@ -613,89 +625,113 @@ def load_config():
     return DEFAULT_CONFIG.copy()
 
 
+def form_bool(form, name):
+    return form.getfirst(name, "") == "1"
+
+
+def form_text(form, config, name, default=None, strip_slashes=False, fallback=None):
+    value = form.getfirst(name, config.get(name, default if default is not None else "")).strip()
+    if strip_slashes:
+        value = value.strip("/")
+    if fallback is not None and not value:
+        return fallback
+    return value
+
+
+def form_int(form, config, name, default):
+    return int(float(form.getfirst(name, config.get(name, default))))
+
+
+def form_float(form, config, name, default):
+    return float(form.getfirst(name, config.get(name, default)))
+
+
+def update_secret_from_form(config, form, key, clear_field, input_field):
+    if form_bool(form, clear_field):
+        config[key] = ""
+        return
+    new_value = form.getfirst(input_field, "").strip()
+    if new_value:
+        config[key] = new_value
+
+
+def commands_from_form(form, config):
+    current = config.get("commands", {})
+    return {
+        name: form.getfirst(field, current.get(name, DEFAULT_CONFIG["commands"][name])).strip()
+        for name, field in COMMAND_FORM_FIELDS.items()
+    }
+
+
 def save_config(form):
     config = load_config()
-    config["ethm_host"] = form.getfirst("ethm_host", config["ethm_host"]).strip()
-    config["ethm_port"] = int(form.getfirst("ethm_port", config["ethm_port"]))
-    config["ethm_timeout"] = float(form.getfirst("ethm_timeout", config["ethm_timeout"]))
-    config["ethm_encryption_enabled"] = form.getfirst("ethm_encryption_enabled", "") == "1"
-    if form.getfirst("clear_ethm_integration_key", "") == "1":
-        config["ethm_integration_key"] = ""
-    else:
-        new_integration_key = form.getfirst("ethm_integration_key", "").strip()
-        if new_integration_key:
-            config["ethm_integration_key"] = new_integration_key
-    config["debug_logging"] = form.getfirst("debug_logging", "") == "1"
-    if form.getfirst("clear_satel_user_code", "") == "1":
-        config["satel_user_code"] = ""
-    else:
-        new_code = form.getfirst("satel_user_code", "").strip()
-        if new_code:
-            config["satel_user_code"] = new_code
-    config["status_poll_interval"] = float(form.getfirst("status_poll_interval", config.get("status_poll_interval", config["poll_interval"])))
+    config["ethm_host"] = form_text(form, config, "ethm_host")
+    config["ethm_port"] = form_int(form, config, "ethm_port", config["ethm_port"])
+    config["ethm_timeout"] = form_float(form, config, "ethm_timeout", config["ethm_timeout"])
+    config["ethm_encryption_enabled"] = form_bool(form, "ethm_encryption_enabled")
+    update_secret_from_form(config, form, "ethm_integration_key", "clear_ethm_integration_key", "ethm_integration_key")
+    config["debug_logging"] = form_bool(form, "debug_logging")
+    update_secret_from_form(config, form, "satel_user_code", "clear_satel_user_code", "satel_user_code")
+    config["status_poll_interval"] = form_float(form, config, "status_poll_interval", config["poll_interval"])
     config["poll_interval"] = config["status_poll_interval"]
-    config["status_send_on_change"] = form.getfirst("status_send_on_change", "") == "1"
-    config["status_full_refresh_interval"] = float(form.getfirst("status_full_refresh_interval", config.get("status_full_refresh_interval", 30.0)))
-    config["push_enabled"] = form.getfirst("push_enabled", "") == "1"
-    config["push_reconnect_interval"] = float(form.getfirst("push_reconnect_interval", config.get("push_reconnect_interval", 10.0)))
-    config["push_debounce_seconds"] = float(form.getfirst("push_debounce_seconds", config.get("push_debounce_seconds", 0.3)))
-    config["partition_mask"] = int(form.getfirst("partition_mask", config["partition_mask"]))
-    config["send_partition_details"] = form.getfirst("send_partition_details", "") == "1"
-    config["send_ready_inferred"] = form.getfirst("send_ready_inferred", "") == "1"
-    config["send_diagnostics"] = form.getfirst("send_diagnostics", "") == "1"
-    config["watchdog_status_max_age"] = float(form.getfirst("watchdog_status_max_age", config.get("watchdog_status_max_age", 30.0)))
-    config["watchdog_push_max_age"] = float(form.getfirst("watchdog_push_max_age", config.get("watchdog_push_max_age", 300.0)))
-    config["loxone_host"] = form.getfirst("loxone_host", config["loxone_host"]).strip()
-    config["loxone_udp_port"] = int(form.getfirst("loxone_udp_port", config["loxone_udp_port"]))
-    config["udp_sender_address"] = form.getfirst("udp_sender_address", config.get("udp_sender_address", "")).strip()
-    config["mqtt_enabled"] = form.getfirst("mqtt_enabled", "") == "1"
-    config["mqtt_host"] = form.getfirst("mqtt_host", config.get("mqtt_host", "localhost")).strip()
-    config["mqtt_port"] = int(form.getfirst("mqtt_port", config.get("mqtt_port", 1883)))
-    config["mqtt_timeout"] = float(form.getfirst("mqtt_timeout", config.get("mqtt_timeout", 3.0)))
-    config["mqtt_keepalive"] = int(float(form.getfirst("mqtt_keepalive", config.get("mqtt_keepalive", 60))))
-    config["mqtt_reconnect_interval"] = float(form.getfirst("mqtt_reconnect_interval", config.get("mqtt_reconnect_interval", 10.0)))
-    config["mqtt_base_topic"] = form.getfirst("mqtt_base_topic", config.get("mqtt_base_topic", "satel")).strip().strip("/") or "satel"
-    config["mqtt_username"] = form.getfirst("mqtt_username", config.get("mqtt_username", "")).strip()
-    config["mqtt_client_id"] = form.getfirst("mqtt_client_id", config.get("mqtt_client_id", "")).strip()
-    config["mqtt_retain"] = form.getfirst("mqtt_retain", "") == "1"
-    config["mqtt_publish_raw"] = form.getfirst("mqtt_publish_raw", "") == "1"
-    config["mqtt_control_enabled"] = form.getfirst("mqtt_control_enabled", "") == "1"
-    if form.getfirst("clear_mqtt_password", "") == "1":
-        config["mqtt_password"] = ""
-    else:
-        new_mqtt_password = form.getfirst("mqtt_password", "").strip()
-        if new_mqtt_password:
-            config["mqtt_password"] = new_mqtt_password
+    config["status_send_on_change"] = form_bool(form, "status_send_on_change")
+    config["status_full_refresh_interval"] = form_float(form, config, "status_full_refresh_interval", 30.0)
+    config["push_enabled"] = form_bool(form, "push_enabled")
+    config["push_reconnect_interval"] = form_float(form, config, "push_reconnect_interval", 10.0)
+    config["push_debounce_seconds"] = form_float(form, config, "push_debounce_seconds", 0.3)
+    config["partition_mask"] = form_int(form, config, "partition_mask", config["partition_mask"])
+    config["send_partition_details"] = form_bool(form, "send_partition_details")
+    config["send_ready_inferred"] = form_bool(form, "send_ready_inferred")
+    config["send_diagnostics"] = form_bool(form, "send_diagnostics")
+    config["watchdog_status_max_age"] = form_float(form, config, "watchdog_status_max_age", 30.0)
+    config["watchdog_push_max_age"] = form_float(form, config, "watchdog_push_max_age", 300.0)
+    config["loxone_host"] = form_text(form, config, "loxone_host")
+    config["loxone_udp_port"] = form_int(form, config, "loxone_udp_port", config["loxone_udp_port"])
+    config["udp_sender_address"] = form_text(form, config, "udp_sender_address", "")
+    config["mqtt_enabled"] = form_bool(form, "mqtt_enabled")
+    config["mqtt_host"] = form_text(form, config, "mqtt_host", "localhost")
+    config["mqtt_port"] = form_int(form, config, "mqtt_port", 1883)
+    config["mqtt_timeout"] = form_float(form, config, "mqtt_timeout", 3.0)
+    config["mqtt_keepalive"] = form_int(form, config, "mqtt_keepalive", 60)
+    config["mqtt_reconnect_interval"] = form_float(form, config, "mqtt_reconnect_interval", 10.0)
+    config["mqtt_base_topic"] = form_text(form, config, "mqtt_base_topic", "satel", strip_slashes=True, fallback="satel")
+    config["mqtt_username"] = form_text(form, config, "mqtt_username", "")
+    config["mqtt_client_id"] = form_text(form, config, "mqtt_client_id", "")
+    config["mqtt_retain"] = form_bool(form, "mqtt_retain")
+    config["mqtt_publish_raw"] = form_bool(form, "mqtt_publish_raw")
+    config["mqtt_control_enabled"] = form_bool(form, "mqtt_control_enabled")
+    update_secret_from_form(config, form, "mqtt_password", "clear_mqtt_password", "mqtt_password")
     config["loxberry_control_url"] = form.getfirst(
         "loxberry_control_url",
         config.get("loxberry_control_url", "http://LOXBERRY_IP/plugins/satel_ethm/control.cgi"),
     ).strip()
     token = form.getfirst("control_token", config.get("control_token", "")).strip()
-    if form.getfirst("regenerate_control_token", "") == "1" or not token:
+    if form_bool(form, "regenerate_control_token") or not token:
         token = secrets.token_urlsafe(18)
     config["control_token"] = token
-    config["default_control_partition"] = int(form.getfirst("default_control_partition", config.get("default_control_partition", 1)))
-    config["control_confirm_enabled"] = form.getfirst("control_confirm_enabled", "") == "1"
-    config["control_confirm_blocking"] = form.getfirst("control_confirm_blocking", "") == "1"
-    config["control_confirm_timeout"] = float(form.getfirst("control_confirm_timeout", config.get("control_confirm_timeout", 20.0)))
-    config["control_confirm_interval"] = float(form.getfirst("control_confirm_interval", config.get("control_confirm_interval", 0.5)))
-    config["send_masks"] = form.getfirst("send_masks", "") == "1"
-    config["send_trouble_details"] = form.getfirst("send_trouble_details", "") == "1"
-    config["poll_zones"] = form.getfirst("poll_zones", "") == "1"
-    config["zones_poll_interval"] = float(form.getfirst("zones_poll_interval", config.get("zones_poll_interval", 1.0)))
-    config["zones_send_on_change"] = form.getfirst("zones_send_on_change", "") == "1"
-    config["zones_full_refresh_interval"] = float(form.getfirst("zones_full_refresh_interval", config.get("zones_full_refresh_interval", 30.0)))
-    config["zone_hold_seconds"] = float(form.getfirst("zone_hold_seconds", config.get("zone_hold_seconds", 3.0)))
+    config["allowed_control_ips"] = form_text(form, config, "allowed_control_ips", "")
+    config["default_control_partition"] = form_int(form, config, "default_control_partition", 1)
+    config["control_confirm_enabled"] = form_bool(form, "control_confirm_enabled")
+    config["control_confirm_blocking"] = form_bool(form, "control_confirm_blocking")
+    config["control_confirm_timeout"] = form_float(form, config, "control_confirm_timeout", 20.0)
+    config["control_confirm_interval"] = form_float(form, config, "control_confirm_interval", 0.5)
+    config["send_masks"] = form_bool(form, "send_masks")
+    config["send_trouble_details"] = form_bool(form, "send_trouble_details")
+    config["poll_zones"] = form_bool(form, "poll_zones")
+    config["zones_poll_interval"] = form_float(form, config, "zones_poll_interval", 1.0)
+    config["zones_send_on_change"] = form_bool(form, "zones_send_on_change")
+    config["zones_full_refresh_interval"] = form_float(form, config, "zones_full_refresh_interval", 30.0)
+    config["zone_hold_seconds"] = form_float(form, config, "zone_hold_seconds", 3.0)
     config["zone_status_command"] = form.getfirst(
         "zone_status_command",
         config.get("zone_status_command", "FE FE 00 D7 E2 FE 0D"),
     ).strip()
-    config["poll_zone_bypass"] = form.getfirst("poll_zone_bypass", "") == "1"
+    config["poll_zone_bypass"] = form_bool(form, "poll_zone_bypass")
     config["zone_bypass_status_command"] = form.getfirst(
         "zone_bypass_status_command",
         config.get("zone_bypass_status_command", "FE FE 06 D7 E8 FE 0D"),
     ).strip()
-    config["poll_zone_diagnostics"] = form.getfirst("poll_zone_diagnostics", "") == "1"
+    config["poll_zone_diagnostics"] = form_bool(form, "poll_zone_diagnostics")
     config["zone_tamper_status_command"] = form.getfirst(
         "zone_tamper_status_command",
         config.get("zone_tamper_status_command", "FE FE 01 D7 E3 FE 0D"),
@@ -708,31 +744,22 @@ def save_config(form):
         "zone_alarm_memory_status_command",
         config.get("zone_alarm_memory_status_command", "FE FE 04 D7 E6 FE 0D"),
     ).strip()
-    config["poll_outputs"] = form.getfirst("poll_outputs", "") == "1"
-    config["outputs_poll_interval"] = float(form.getfirst("outputs_poll_interval", config.get("outputs_poll_interval", 2.0)))
-    config["outputs_send_on_change"] = form.getfirst("outputs_send_on_change", "") == "1"
-    config["outputs_full_refresh_interval"] = float(form.getfirst("outputs_full_refresh_interval", config.get("outputs_full_refresh_interval", 30.0)))
-    config["output_status_command"] = form.getfirst("output_status_command", config.get("output_status_command", "")).strip()
-    config["poll_temperatures"] = form.getfirst("poll_temperatures", "") == "1"
-    config["temperature_poll_interval"] = float(form.getfirst("temperature_poll_interval", config.get("temperature_poll_interval", 60.0)))
-    config["temperature_timeout"] = float(form.getfirst("temperature_timeout", config.get("temperature_timeout", 5.0)))
-    config["send_temperature_raw"] = form.getfirst("send_temperature_raw", "") == "1"
+    config["poll_outputs"] = form_bool(form, "poll_outputs")
+    config["outputs_poll_interval"] = form_float(form, config, "outputs_poll_interval", 2.0)
+    config["outputs_send_on_change"] = form_bool(form, "outputs_send_on_change")
+    config["outputs_full_refresh_interval"] = form_float(form, config, "outputs_full_refresh_interval", 30.0)
+    config["output_status_command"] = form_text(form, config, "output_status_command", "")
+    config["poll_temperatures"] = form_bool(form, "poll_temperatures")
+    config["temperature_poll_interval"] = form_float(form, config, "temperature_poll_interval", 60.0)
+    config["temperature_timeout"] = form_float(form, config, "temperature_timeout", 5.0)
+    config["send_temperature_raw"] = form_bool(form, "send_temperature_raw")
     zones_text = form.getfirst("zones_text", "")
     config["zones"] = parse_zones_text(zones_text)
     config["temperature_zones"] = parse_temperature_zones_text(form.getfirst("temperature_zones_text", ""))
     config["control_partitions"] = parse_partitions_text(form.getfirst("control_partitions_text", ""))
     config["control_outputs"] = parse_outputs_text(form.getfirst("control_outputs_text", ""))
     config["control_profiles"] = parse_control_profiles_text(form.getfirst("control_profiles_text", ""))
-    config["commands"] = {
-        "armed": form.getfirst("cmd_armed", config["commands"]["armed"]).strip(),
-        "alarm": form.getfirst("cmd_alarm", config["commands"]["alarm"]).strip(),
-        "fire_alarm": form.getfirst("cmd_fire_alarm", config["commands"].get("fire_alarm", "FE FE 14 D7 F6 FE 0D")).strip(),
-        "alarm_memory": form.getfirst("cmd_alarm_memory", config["commands"].get("alarm_memory", "FE FE 15 D7 F7 FE 0D")).strip(),
-        "trouble": form.getfirst("cmd_trouble", config["commands"]["trouble"]).strip(),
-        "entry_time": form.getfirst("cmd_entry_time", config["commands"].get("entry_time", "FE FE 0E D7 F0 FE 0D")).strip(),
-        "exit_time": form.getfirst("cmd_exit_time", config["commands"].get("exit_time", "FE FE 0F D7 F1 FE 0D")).strip(),
-        "exit_time_short": form.getfirst("cmd_exit_time_short", config["commands"].get("exit_time_short", "FE FE 10 D7 F2 FE 0D")).strip(),
-    }
+    config["commands"] = commands_from_form(form, config)
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with CONFIG_FILE.open("w", encoding="utf-8") as fh:
         json.dump(config, fh, indent=2, ensure_ascii=False)
@@ -1095,6 +1122,11 @@ def autotest_config(config):
     add("Adres UDP Loxone", bool(str(config.get("loxone_host", "")).strip()), str(config.get("loxone_host", "")))
     add("Port UDP Loxone", 1 <= int(config.get("loxone_udp_port", 0)) <= 65535, str(config.get("loxone_udp_port", "")))
     add("Token sterowania", bool(str(config.get("control_token", "")).strip()), "ustawiony" if config.get("control_token") else "brak")
+    add(
+        "Dozwolone IP sterowania",
+        bool(str(config.get("allowed_control_ips", "")).strip()),
+        str(config.get("allowed_control_ips", "")).strip() or "puste - kazdy host z tokenem moze wywolac control.cgi",
+    )
     add("Kod uzytkownika SATEL", bool(str(config.get("satel_user_code", "")).strip()), "ustawiony" if config.get("satel_user_code") else "brak - sterowanie nie zadziala")
     add("Partycje", bool(config.get("control_partitions", [])), f"{len(config.get('control_partitions', []))} szt.")
     add("Wejscia", bool(config.get("zones", [])), f"{len(config.get('zones', []))} szt.")
@@ -2196,6 +2228,11 @@ def main():
           <label>Token sterowania</label>
           <input name="control_token" value="{esc(config.get("control_token", ""))}">
           <label style="font-weight:400"><input style="width:auto" type="checkbox" name="regenerate_control_token" value="1"> Wygeneruj nowy token przy zapisie</label>
+        </div>
+        <div>
+          <label>Dozwolone IP sterowania</label>
+          <input name="allowed_control_ips" value="{esc(config.get("allowed_control_ips", ""))}" placeholder="np. 192.168.1.77">
+          <p class="hint">Puste = zgodność wsteczna. Wpisz IP Miniservera, aby <code>control.cgi</code> odrzucał komendy z innych adresów. Kilka adresów oddziel przecinkiem, średnikiem albo spacją.</p>
         </div>
         <div>
           <label>Domyślna partycja sterowania</label>

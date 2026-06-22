@@ -156,6 +156,37 @@ payload: 1
 
 MQTT używa QoS 0 i standardowo flagi `retain`. Sterowanie MQTT włączaj tylko w zaufanej sieci albo z brokerem zabezpieczonym loginem i hasłem.
 
+## Bezpieczenstwo sterowania Loxone -> LoxBerry
+
+Od wersji 0.24.0 w panelu jest pole:
+
+```text
+Dozwolone IP sterowania
+```
+
+Jeżeli wpiszesz tam IP Miniservera, np.:
+
+```text
+192.168.1.77
+```
+
+to `control.cgi` przyjmie komendy tylko z tego adresu. Kilka adresow mozna oddzielic przecinkiem, srednikiem albo spacja. Puste pole zostawia zachowanie zgodne ze starszymi wersjami: wystarczy poprawny token.
+
+Zalecana konfiguracja:
+
+```text
+Token sterowania: ustawiony
+Dozwolone IP sterowania: IP Miniservera Loxone
+LoxBerry: niewystawiony do internetu
+Dostep zdalny: tylko przez VPN
+```
+
+Odrzucone proby sterowania sa zapisywane w:
+
+```text
+/opt/loxberry/log/plugins/satel_ethm/satel_ethm_control.log
+```
+
 Od wersji 0.6.8 wtyczka wysyła także informację zwrotną po sterowaniu. `SATEL_CONTROL_LAST_CODE=0` oznacza OK, `255` oznacza, że komenda została przyjęta i będzie przetworzona przez centralę. `SATEL_CONTROL_LAST_ACTION`: `1` arm, `2` force arm, `3` disarm, `4` clear alarm, `5` clear trouble, `6/7` output on/off, `8` toggle, `9/10` bypass/unbypass.
 
 ## Wejścia
@@ -311,6 +342,8 @@ Od wersji 0.22.0 panel diagnostyczny live pokazuje skrot stanu, ostatnie wartosc
 Od wersji 0.22.1 XML Lite wejsc UDP zawiera takze czas na wejscie i czas na wyjscie: `SATEL_ENTRY_TIME`, `SATEL_EXIT_TIME`, `SATEL_EXIT_TIME_LONG`, `SATEL_EXIT_TIME_SHORT` oraz odpowiedniki per partycja.
 
 Od wersji 0.23.0 dodano opcjonalne MQTT: publikowanie statusow, wejsc, wyjsc, temperatur, awarii, diagnostyki i watchdogow oraz opcjonalne sterowanie przez `satel/control/#`. Panel ma sekcje MQTT i pokazuje diagnostyke ostatniej publikacji oraz polaczenia sterujacego.
+
+Od wersji 0.24.0 dodano ograniczenie dostepu do `control.cgi` po IP zrodlowym. Pole `Dozwolone IP sterowania` pozwala wpisac IP Miniservera, dzieki czemu komendy HTTP z innych adresow sa odrzucane kodem `403`.
 
 
 ## Testy w panelu

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.24.0
+
+- Added optional source IP allowlist for `control.cgi`.
+- Added `allowed_control_ips` configuration field in the LoxBerry panel.
+- `control.cgi` now logs rejected control attempts caused by a bad source IP or bad token.
+- Configuration autotest warns when HTTP control is not restricted to selected source IP addresses.
+
+## 0.23.1
+
+- Internal cleanup/refactor without changing the public UDP, HTTP, MQTT or XML interfaces.
+- Reduced duplication in core status decoding, zone payload generation and panel form handling.
+- Kept existing configuration format and Loxone import/export behavior unchanged.
+
 ## 0.23.0
 
 - Added optional MQTT publishing without external Python dependencies.

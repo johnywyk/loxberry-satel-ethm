@@ -57,6 +57,7 @@ Known tested direction:
 - Push-triggered polling with fallback polling.
 - Optional ETHM integration encryption support.
 - HTTP control bridge for Loxone.
+- Optional source IP allowlist for HTTP control.
 - XML generators for Loxone Config:
   - selected UDP input sections
   - Lite UDP input XML
@@ -154,6 +155,10 @@ details from real installations.
 ## Security
 
 Do not expose the control endpoint to the internet.
+
+For HTTP control, set the source IP allowlist in the plugin panel to the
+Loxone Miniserver IP address. This makes `control.cgi` reject requests from
+other hosts even when they know the token.
 
 Create a dedicated SATEL user for LoxBerry/Loxone and give it only the minimal
 permissions needed for the required partitions and outputs.

@@ -22,12 +22,48 @@ LEGACY_CONFIGS = [
     f"/opt/loxberry/config/plugins/{PLUGIN}/config.json",
 ]
 DEFAULT_LOG = f"/opt/loxberry/log/plugins/{PLUGIN}/satel_ethm_bridge.log"
-VERSION = "0.23.0"
+VERSION = "0.24.0"
 
 RUNNING = True
 RUNTIME_STATE = {}
 RUNTIME_LAST_WRITE = 0
 RUNTIME_EVENT_LIMIT = 80
+
+PARTITION_MASK_COMMANDS = {
+    "armed",
+    "alarm",
+    "fire_alarm",
+    "alarm_memory",
+    "entry_time",
+    "exit_time",
+    "exit_time_short",
+}
+
+CORE_RESULT_KEYS = {
+    "armed": "SATEL_ARMED",
+    "alarm": "SATEL_ALARM",
+    "fire_alarm": "SATEL_FIRE_ALARM",
+    "alarm_memory": "SATEL_ALARM_MEMORY",
+    "trouble": "SATEL_TROUBLE",
+    "entry_time": "SATEL_ENTRY_TIME",
+}
+
+CORE_MASK_KEYS = {
+    "armed": "SATEL_ARMED_MASK",
+    "alarm": "SATEL_ALARM_MASK",
+    "fire_alarm": "SATEL_FIRE_ALARM_MASK",
+    "alarm_memory": "SATEL_ALARM_MEMORY_MASK",
+    "trouble": "SATEL_TROUBLE_MASK",
+    "entry_time": "SATEL_ENTRY_TIME_MASK",
+    "exit_time": "SATEL_EXIT_TIME_LONG_MASK",
+    "exit_time_short": "SATEL_EXIT_TIME_SHORT_MASK",
+}
+
+ZONE_DIAGNOSTIC_COMMANDS = (
+    ("TAMPER", "zone_tamper_status_command", "FE FE 01 D7 E3 FE 0D"),
+    ("ALARM", "zone_alarm_status_command", "FE FE 02 D7 E4 FE 0D"),
+    ("ALARM_MEMORY", "zone_alarm_memory_status_command", "FE FE 04 D7 E6 FE 0D"),
+)
 
 
 def handle_signal(signum, frame):
@@ -1585,32 +1621,19 @@ def read_core_statuses(config, transport=None):
             mask, data = mask_from_response(response)
             masks[name] = mask
             data_by_name[name] = data
-            if name in ("armed", "alarm", "fire_alarm", "alarm_memory", "entry_time", "exit_time", "exit_time_short"):
-                results[name] = 1 if (mask & wanted_mask) else 0
-            elif name == "trouble":
-                results[name] = 1 if any(data) else 0
-            else:
-                results[name] = 1 if mask else 0
+            results[name] = core_result_value(name, mask, data, wanted_mask)
             debug_log(config, f"{name}: response={response.hex(' ').upper()} mask={mask} value={results[name]}")
         except Exception as exc:
             errors[name] = str(exc)
             log(f"{name}: ERROR: {exc}")
 
     payload = {"SATEL_ONLINE": 1 if results else 0}
-    if "armed" in results:
-        payload["SATEL_ARMED"] = results["armed"]
-    if "alarm" in results:
-        payload["SATEL_ALARM"] = results["alarm"]
-    if "fire_alarm" in results:
-        payload["SATEL_FIRE_ALARM"] = results["fire_alarm"]
-    if "alarm_memory" in results:
-        payload["SATEL_ALARM_MEMORY"] = results["alarm_memory"]
+    for name, key in CORE_RESULT_KEYS.items():
+        if name in results:
+            payload[key] = results[name]
     if "trouble" in results:
-        payload["SATEL_TROUBLE"] = results["trouble"]
         if cfg_bool(config, "send_trouble_details", True) and "trouble" in masks:
             payload.update(trouble_detail_payload(data_by_name.get("trouble", [])))
-    if "entry_time" in results:
-        payload["SATEL_ENTRY_TIME"] = results["entry_time"]
     exit_time = 0
     exit_time_known = False
     if "exit_time" in results:
@@ -1625,27 +1648,19 @@ def read_core_statuses(config, transport=None):
         payload["SATEL_EXIT_TIME"] = 1 if exit_time else 0
     add_partition_payload(config, payload, masks)
     if config.get("send_masks", True):
-        if "armed" in masks:
-            payload["SATEL_ARMED_MASK"] = masks["armed"]
-        if "alarm" in masks:
-            payload["SATEL_ALARM_MASK"] = masks["alarm"]
-        if "fire_alarm" in masks:
-            payload["SATEL_FIRE_ALARM_MASK"] = masks["fire_alarm"]
-        if "alarm_memory" in masks:
-            payload["SATEL_ALARM_MEMORY_MASK"] = masks["alarm_memory"]
-        if "trouble" in masks:
-            payload["SATEL_TROUBLE_MASK"] = masks["trouble"]
-        if "entry_time" in masks:
-            payload["SATEL_ENTRY_TIME_MASK"] = masks["entry_time"]
-        if "exit_time" in masks:
-            payload["SATEL_EXIT_TIME_LONG_MASK"] = masks["exit_time"]
-        if "exit_time_short" in masks:
-            payload["SATEL_EXIT_TIME_SHORT_MASK"] = masks["exit_time_short"]
-    if errors:
-        payload["SATEL_ERROR"] = 1
-    else:
-        payload["SATEL_ERROR"] = 0
+        for name, key in CORE_MASK_KEYS.items():
+            if name in masks:
+                payload[key] = masks[name]
+    payload["SATEL_ERROR"] = 1 if errors else 0
     return payload
+
+
+def core_result_value(name, mask, data, wanted_mask):
+    if name in PARTITION_MASK_COMMANDS:
+        return 1 if (mask & wanted_mask) else 0
+    if name == "trouble":
+        return 1 if any(data) else 0
+    return 1 if mask else 0
 
 
 def trouble_detail_payload(data):
@@ -1676,21 +1691,29 @@ def trouble_detail_payload(data):
 
 
 def configured_zones(config):
-    zones = []
-    for zone in config.get("zones", []):
-        try:
-            number = int(zone.get("number", 0))
-        except Exception:
-            continue
-        try:
-            partition = int(zone.get("partition", 0) or 0)
-        except Exception:
-            partition = 0
+    zones = configured_numbered_items(config.get("zones", []))
+    for zone in zones:
+        partition = int(zone.get("partition", 0) or 0)
         if partition < 1 or partition > 32:
             partition = 0
-        if zone.get("enabled", True) and number > 0:
-            zones.append({"number": number, "name": zone.get("name", ""), "partition": partition})
+        zone["partition"] = partition
     return zones
+
+
+def configured_numbered_items(items):
+    normalized = []
+    for item in items:
+        try:
+            number = int(item.get("number", 0))
+        except Exception:
+            continue
+        if item.get("enabled", True) and number > 0:
+            normalized.append({
+                "number": number,
+                "name": item.get("name", ""),
+                "partition": item.get("partition", 0),
+            })
+    return normalized
 
 
 def add_partition_zone_payload(config, payload, zones):
@@ -1728,27 +1751,11 @@ def add_partition_zone_payload(config, payload, zones):
 
 
 def configured_outputs(config):
-    outputs = []
-    for output in config.get("control_outputs", []):
-        try:
-            number = int(output.get("number", 0))
-        except Exception:
-            continue
-        if output.get("enabled", True) and number > 0:
-            outputs.append({"number": number, "name": output.get("name", "")})
-    return outputs
+    return configured_numbered_items(config.get("control_outputs", []))
 
 
 def configured_temperature_zones(config):
-    zones = []
-    for zone in config.get("temperature_zones", []):
-        try:
-            number = int(zone.get("number", 0))
-        except Exception:
-            continue
-        if zone.get("enabled", True) and number > 0:
-            zones.append({"number": number, "name": zone.get("name", "")})
-    return zones
+    return configured_numbered_items(config.get("temperature_zones", []))
 
 
 def read_zone_statuses(config, transport=None):
@@ -1763,13 +1770,7 @@ def read_zone_statuses(config, transport=None):
         frame = hex_to_bytes(expand_command_template(command_hex, config))
         response = query_frame(config, frame, transport)
         zone_data = data_from_response(response)
-        zone_any = 0
-        for zone in zones:
-            number = int(zone.get("number", 0))
-            value = zone_violated(zone_data, number)
-            zone_any = zone_any or value
-            payload[f"SATEL_ZONE_{number:03d}"] = value
-        payload["SATEL_ZONE_ANY"] = 1 if zone_any else 0
+        zone_any = add_zone_bit_payload(payload, zones, zone_data)
         payload["SATEL_READY_ZONES_OK"] = 0 if zone_any else 1
         debug_log(config, f"zones: response={response.hex(' ').upper()} count={len(zones)} any={payload['SATEL_ZONE_ANY']}")
 
@@ -1778,34 +1779,17 @@ def read_zone_statuses(config, transport=None):
             frame = hex_to_bytes(expand_command_template(command_hex, config))
             response = query_frame(config, frame, transport)
             bypass_data = data_from_response(response)
-            bypass_any = 0
-            for zone in zones:
-                number = int(zone.get("number", 0))
-                value = zone_violated(bypass_data, number)
-                bypass_any = bypass_any or value
-                payload[f"SATEL_ZONE_{number:03d}_BYPASS"] = value
-            payload["SATEL_ZONE_BYPASS_ANY"] = 1 if bypass_any else 0
+            add_zone_bit_payload(payload, zones, bypass_data, "BYPASS")
             debug_log(config, f"zones_bypass: response={response.hex(' ').upper()} count={len(zones)} any={payload['SATEL_ZONE_BYPASS_ANY']}")
 
         if cfg_bool(config, "poll_zone_diagnostics", True):
-            diagnostics = [
-                ("TAMPER", "zone_tamper_status_command", "FE FE 01 D7 E3 FE 0D"),
-                ("ALARM", "zone_alarm_status_command", "FE FE 02 D7 E4 FE 0D"),
-                ("ALARM_MEMORY", "zone_alarm_memory_status_command", "FE FE 04 D7 E6 FE 0D"),
-            ]
-            for suffix, config_key, default_command in diagnostics:
+            for suffix, config_key, default_command in ZONE_DIAGNOSTIC_COMMANDS:
                 command_hex = config.get(config_key, default_command)
                 frame = hex_to_bytes(expand_command_template(command_hex, config))
                 response = query_frame(config, frame, transport)
                 diagnostic_data = data_from_response(response)
-                diagnostic_any = 0
-                for zone in zones:
-                    number = int(zone.get("number", 0))
-                    value = zone_violated(diagnostic_data, number)
-                    diagnostic_any = diagnostic_any or value
-                    payload[f"SATEL_ZONE_{number:03d}_{suffix}"] = value
-                any_key = f"SATEL_ZONE_{suffix}_ANY"
-                payload[any_key] = 1 if diagnostic_any else 0
+                diagnostic_any = add_zone_bit_payload(payload, zones, diagnostic_data, suffix)
+                any_key = zone_any_key(suffix)
                 if suffix == "TAMPER":
                     payload["SATEL_READY_TAMPER_OK"] = 0 if diagnostic_any else 1
                 debug_log(
@@ -1818,6 +1802,22 @@ def read_zone_statuses(config, transport=None):
         log(f"zones: ERROR: {exc}")
 
     return payload
+
+
+def zone_any_key(suffix=""):
+    return f"SATEL_ZONE_{suffix}_ANY" if suffix else "SATEL_ZONE_ANY"
+
+
+def add_zone_bit_payload(payload, zones, data, suffix=""):
+    any_value = 0
+    key_suffix = f"_{suffix}" if suffix else ""
+    for zone in zones:
+        number = int(zone.get("number", 0))
+        value = zone_violated(data, number)
+        any_value = any_value or value
+        payload[f"SATEL_ZONE_{number:03d}{key_suffix}"] = value
+    payload[zone_any_key(suffix)] = 1 if any_value else 0
+    return any_value
 
 
 def add_ready_status(config, status_payload, zone_payload):
