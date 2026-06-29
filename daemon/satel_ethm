@@ -1,0 +1,8 @@
+#!/bin/sh
+# SATEL ETHM Bridge - LoxBerry daemon script
+
+PLUGIN="satel_ethm"
+SERVICE="${LBHOMEDIR}/bin/plugins/${PLUGIN}/satel_ethm_service.sh"
+
+chmod +x "$SERVICE" 2>/dev/null || true
+exec "$SERVICE" "${1:-status}"

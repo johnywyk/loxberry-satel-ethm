@@ -1,29 +1,16 @@
 #!/bin/sh
-set -eu
+# SATEL ETHM Bridge - Pre-install script (run as ROOT before file installation)
+# Tworzy wymagane katalogi z właściwymi uprawnieniami
 
 PLUGIN="satel_ethm"
-CONFIG_DIR="/opt/loxberry/config/plugins/$PLUGIN"
-DATA_DIR="/opt/loxberry/data/plugins/$PLUGIN"
-SYSTEM_DIR="/opt/loxberry/data/system/$PLUGIN"
+CONFIG_DIR="${LBHOMEDIR}/config/plugins/${PLUGIN}"
+LOG_DIR="${LBHOMEDIR}/log/plugins/${PLUGIN}"
+DATA_DIR="${LBHOMEDIR}/data/plugins/${PLUGIN}"
+SYSTEM_DIR="${LBHOMEDIR}/data/system/${PLUGIN}"
 
-mkdir -p "$DATA_DIR" "$SYSTEM_DIR"
+# Utwórz katalogi z właściwymi uprawnieniami PRZED postinstall.sh
+mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$DATA_DIR" "$SYSTEM_DIR"
+chown -R loxberry:loxberry "$CONFIG_DIR" "$LOG_DIR" "$DATA_DIR" 2>/dev/null || true
 
-if [ -f "$CONFIG_DIR/config.json" ]; then
-  cp "$CONFIG_DIR/config.json" "$SYSTEM_DIR/config.json.preinstall.bak" 2>/dev/null || true
-  if [ ! -f "$SYSTEM_DIR/config.json" ]; then
-    cp "$CONFIG_DIR/config.json" "$SYSTEM_DIR/config.json" 2>/dev/null || true
-  fi
-fi
-
-if [ -f "$DATA_DIR/config.json" ]; then
-  cp "$DATA_DIR/config.json" "$SYSTEM_DIR/config.json.lastgood.bak" 2>/dev/null || true
-  if [ ! -f "$SYSTEM_DIR/config.json" ]; then
-    cp "$DATA_DIR/config.json" "$SYSTEM_DIR/config.json" 2>/dev/null || true
-  fi
-fi
-
-if [ -f "$SYSTEM_DIR/config.json" ]; then
-  cp "$SYSTEM_DIR/config.json" "$SYSTEM_DIR/config.json.lastgood.bak" 2>/dev/null || true
-fi
-
+echo "Directories created with correct permissions"
 exit 0

@@ -14,14 +14,16 @@ from datetime import datetime
 from pathlib import Path
 
 PLUGIN = "satel_ethm"
-CONFIG_FILE = Path(os.environ.get("SATEL_ETHM_CONFIG", f"/opt/loxberry/data/system/{PLUGIN}/config.json"))
+# Standard LoxBerry config path (included in system backup, compatible with LoxBerry tools)
+CONFIG_FILE = Path(os.environ.get("SATEL_ETHM_CONFIG", f"/opt/loxberry/config/plugins/{PLUGIN}/config.json"))
 LEGACY_CONFIG_FILES = [
+    Path(f"/opt/loxberry/data/system/{PLUGIN}/config.json"),
     Path(f"/opt/loxberry/data/plugins/{PLUGIN}/config.json"),
-    Path(f"/opt/loxberry/config/plugins/{PLUGIN}/config.json"),
 ]
 SERVICE_SCRIPT = Path(f"/opt/loxberry/bin/plugins/{PLUGIN}/satel_ethm_service.sh")
 SYSTEMD_SERVICE = "satel-ethm-bridge.service"
-VERSION = "0.24.0"
+LB_MQTT_CONFIG = Path("/opt/loxberry/config/system/mqtt.json")
+VERSION = "0.25.13"
 CONTROL_QUEUE_DIR = CONFIG_FILE.parent / "control_queue"
 RUNTIME_FILE = CONFIG_FILE.parent / "runtime.json"
 
@@ -77,6 +79,7 @@ DEFAULT_CONFIG = {
     "control_confirm_blocking": False,
     "control_confirm_timeout": 20.0,
     "control_confirm_interval": 0.5,
+    "heartbeat_interval": 30.0,
     "send_masks": True,
     "send_trouble_details": True,
     "poll_zones": True,
@@ -138,12 +141,23 @@ def run_command(args):
 
 
 def service_status():
-    if shutil_which("systemctl"):
-        status = run_command(["systemctl", "is-active", SYSTEMD_SERVICE])
-        return status if status else "unknown"
+    # First check PID file via service script
     if SERVICE_SCRIPT.exists():
-        return run_command([str(SERVICE_SCRIPT), "status"])
-    return "unknown"
+        result = run_command([str(SERVICE_SCRIPT), "status"])
+        if result and "running" in result.lower():
+            return "active"
+    # Fallback: check if bridge process is actually running (even without PID file)
+    pgrep = shutil_which("pgrep")
+    if pgrep:
+        result = run_command([pgrep, "-f", "satel_ethm_bridge.py"])
+        if result and result.strip().isdigit():
+            return "active (no pidfile)"
+    # Fallback: systemd
+    if shutil_which("systemctl"):
+        result = run_command(["systemctl", "is-active", SYSTEMD_SERVICE])
+        if result and result.strip() == "active":
+            return "active"
+    return "stopped"
 
 
 def load_runtime_state():
@@ -594,6 +608,29 @@ def import_dloadx_config(form):
     )
 
 
+
+
+def _autofill_lb_mqtt(config):
+    """Auto-fill MQTT credentials from LoxBerry system config if not set."""
+    if config.get("mqtt_host"):
+        return config  # Already configured manually
+    try:
+        if LB_MQTT_CONFIG.exists():
+            lb = json.loads(LB_MQTT_CONFIG.read_text(encoding="utf-8"))
+            host = (lb.get("Hostname") or lb.get("hostname") or "").strip()
+            if host:
+                config = dict(config)  # Don't mutate original
+                config.setdefault("mqtt_host", host)
+                config.setdefault("mqtt_port", int(lb.get("Port") or lb.get("port") or 1883))
+                config.setdefault("mqtt_username",
+                    (lb.get("Username") or lb.get("username") or "").strip())
+                if not config.get("mqtt_password"):
+                    config.setdefault("mqtt_password",
+                        (lb.get("Password") or lb.get("password") or "").strip())
+    except Exception:
+        pass
+    return config
+
 def load_config():
     source_file = CONFIG_FILE
     if not source_file.exists():
@@ -619,10 +656,10 @@ def load_config():
             merged["temperature_zones"] = normalize_numbered_items(
                 loaded.get("temperature_zones", []), 256, "Temperatura"
             )
-            return merged
+            return _autofill_lb_mqtt(merged)
         except Exception:
-            return DEFAULT_CONFIG.copy()
-    return DEFAULT_CONFIG.copy()
+            return _autofill_lb_mqtt(DEFAULT_CONFIG.copy())
+    return _autofill_lb_mqtt(DEFAULT_CONFIG.copy())
 
 
 def form_bool(form, name):
@@ -1747,6 +1784,35 @@ def main():
             "server_iso": datetime.now().isoformat(timespec="seconds"),
         })
         return
+
+    if action in ("service_start", "service_stop", "service_restart"):
+        cmd_map = {"service_start": "start", "service_stop": "stop", "service_restart": "restart"}
+        result = "SERVICE_SCRIPT not found"
+        if SERVICE_SCRIPT.exists():
+            import shutil as _shutil
+        _sudo = _shutil.which("sudo")
+        if _sudo:
+            result = run_command([_sudo, str(SERVICE_SCRIPT), cmd_map[action]]) or "done"
+        else:
+            result = run_command([str(SERVICE_SCRIPT), cmd_map[action]]) or "done"
+        time.sleep(1.5)  # daj czas na zmianę stanu
+        status_after = service_status()
+        send_json({"ok": True, "message": result, "status": status_after})
+        return
+
+    if action == "log_tail":
+        import json as _json_lt
+        log_path = Path(f"/opt/loxberry/log/plugins/{PLUGIN}/satel_ethm_bridge.log")
+        lines = []
+        try:
+            with log_path.open("r", encoding="utf-8", errors="replace") as _fh:
+                _all = _fh.readlines()
+                lines = _all[-80:] if len(_all) > 80 else _all
+        except Exception as _exc:
+            lines = [f"Blad odczytu logu: {_exc}\n"]
+        send_json({"lines": "".join(lines)})
+        return
+
     if action == "download_config":
         download_config_backup(load_config())
         return
@@ -1923,7 +1989,25 @@ def main():
   <h1>SATEL ETHM Bridge</h1>
   <p>Odczyt stanu Integry przez ETHM TCP 7094 i wysyłka prostych wartości UDP do Loxone.</p>
   <p>Wersja pluginu: <code>{esc(VERSION)}</code></p>
-  <p>Status usługi: <code>{esc(current_service_status)}</code></p>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+    <p style="margin:0">Status usługi:
+      <code id="svc-status" style="font-size:1em;padding:3px 8px;border-radius:4px;
+        background:{'#d4edda' if current_service_status=='active' else '#f8d7da'};
+        color:{'#155724' if current_service_status=='active' else '#721c24'}">
+        {esc(current_service_status)}
+      </code>
+    </p>
+    <button onclick="svcAction(&quot;service_start&quot;)"
+      style="padding:5px 14px;background:#27ae60;color:#fff;border:none;border-radius:4px;cursor:pointer">
+      &#9654; Start</button>
+    <button onclick="svcAction(&quot;service_stop&quot;)"
+      style="padding:5px 14px;background:#e74c3c;color:#fff;border:none;border-radius:4px;cursor:pointer">
+      &#9632; Stop</button>
+    <button onclick="svcAction(&quot;service_restart&quot;)"
+      style="padding:5px 14px;background:#e67e22;color:#fff;border:none;border-radius:4px;cursor:pointer">
+      &#8635; Restart</button>
+    <span id="svc-msg" style="font-size:0.85em;color:#666"></span>
+  </div>
   <p>Plik konfiguracji: <code>{esc(CONFIG_FILE)}</code></p>
   {"<p class='message'>" + esc(message) + "</p>" if message else ""}
 
@@ -1949,6 +2033,17 @@ def main():
       </tbody>
     </table>
     <p class="hint">Tabela odświeża się automatycznie co 2 sekundy z pliku runtime usługi.</p>
+
+    <h3>Log (ostatnie 80 linii)</h3>
+    <div id="log-box" style="background:#111;color:#0f0;font-family:monospace;font-size:0.75em;padding:12px;border-radius:6px;max-height:320px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;">Ładowanie...</div>
+    <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+      <label style="font-weight:400;font-size:0.85em">
+        <input type="checkbox" id="log-autoscroll" checked style="width:auto"> Auto-scroll
+      </label>
+      <label style="font-weight:400;font-size:0.85em">
+        <input type="checkbox" id="log-autorefresh" checked style="width:auto"> Auto-odświeżanie (5s)
+      </label>
+    </div>
   </details>
 
   <script>
@@ -1984,6 +2079,53 @@ def main():
   }}
   setInterval(refreshRuntime, 2000);
   refreshRuntime();
+
+  async function refreshLog() {{
+    const autorefresh = document.getElementById('log-autoscroll');
+    const box = document.getElementById('log-box');
+    if (!box) return;
+    try {{
+      const r = await fetch('?action=log_tail', {{cache: 'no-store'}});
+      if (!r.ok) return;
+      const data = await r.json();
+      box.textContent = data.lines || '';
+      const chk = document.getElementById('log-autoscroll');
+      if (chk && chk.checked) box.scrollTop = box.scrollHeight;
+    }} catch(e) {{}}
+  }}
+
+  let logTimer = null;
+  function setupLogRefresh() {{
+    const chk = document.getElementById('log-autorefresh');
+    if (!chk) return;
+    if (logTimer) clearInterval(logTimer);
+    if (chk.checked) {{
+      logTimer = setInterval(refreshLog, 5000);
+      refreshLog();
+    }}
+    chk.addEventListener('change', setupLogRefresh);
+  }}
+  setupLogRefresh();
+  refreshLog();
+
+  async function svcAction(action) {{
+    const msg = document.getElementById("svc-msg");
+    const badge = document.getElementById("svc-status");
+    if (msg) msg.textContent = "Proszę czekać...";
+    try {{
+      const r = await fetch("?action=" + action, {{cache: "no-store"}});
+      const data = await r.json();
+      if (badge && data.status) {{
+        badge.textContent = data.status;
+        badge.style.background = data.status === "active" ? "#d4edda" : "#f8d7da";
+        badge.style.color = data.status === "active" ? "#155724" : "#721c24";
+      }}
+      if (msg) msg.textContent = data.message || "OK";
+      setTimeout(() => {{ if (msg) msg.textContent = ""; }}, 4000);
+    }} catch(e) {{
+      if (msg) msg.textContent = "Błąd: " + e;
+    }}
+  }}
   </script>
 
   <form method="post" enctype="multipart/form-data">
@@ -2405,7 +2547,7 @@ def main():
   <details class="box">
     <summary>Usługa</summary>
     <p>Zmiany konfiguracji są czytane automatycznie w każdej pętli, restart nie jest wymagany.</p>
-    <p class="hint">Jeżeli chcesz ręcznie zrestartować usługę przez SSH, użyj: <code>sudo systemctl restart satel-ethm-bridge.service</code></p>
+    <p class="hint">Aby ręcznie zarządzać usługą przez SSH: <code>/opt/loxberry/bin/plugins/satel_ethm/satel_ethm_service.sh start|stop|restart|status</code></p>
   </details>
 
   <details class="box">

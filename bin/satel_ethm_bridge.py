@@ -16,13 +16,15 @@ except Exception:
     modes = None
 
 PLUGIN = "satel_ethm"
-DEFAULT_CONFIG = f"/opt/loxberry/data/system/{PLUGIN}/config.json"
+# Standard LoxBerry config location (backed up by LoxBerry system backup)
+DEFAULT_CONFIG = f"/opt/loxberry/config/plugins/{PLUGIN}/config.json"
 LEGACY_CONFIGS = [
+    f"/opt/loxberry/data/system/{PLUGIN}/config.json",
     f"/opt/loxberry/data/plugins/{PLUGIN}/config.json",
-    f"/opt/loxberry/config/plugins/{PLUGIN}/config.json",
 ]
 DEFAULT_LOG = f"/opt/loxberry/log/plugins/{PLUGIN}/satel_ethm_bridge.log"
-VERSION = "0.24.0"
+LB_MQTT_CONFIG = "/opt/loxberry/config/system/mqtt.json"
+VERSION = "0.25.13"
 
 RUNNING = True
 RUNTIME_STATE = {}
@@ -103,12 +105,7 @@ def debug_log(config, message):
 
 
 def load_config():
-    config_file = os.environ.get("SATEL_ETHM_CONFIG", DEFAULT_CONFIG)
-    if not os.path.exists(config_file):
-        for legacy_config in LEGACY_CONFIGS:
-            if os.path.exists(legacy_config):
-                config_file = legacy_config
-                break
+    config_file = config_file_path()
     with open(config_file, "r", encoding="utf-8") as fh:
         return json.load(fh)
 
@@ -130,7 +127,12 @@ def cfg_bool(config, key, default):
 
 
 def config_file_path():
-    return os.environ.get("SATEL_ETHM_CONFIG", DEFAULT_CONFIG)
+    cfg = os.environ.get("SATEL_ETHM_CONFIG", DEFAULT_CONFIG)
+    if not os.path.exists(cfg):
+        for legacy in LEGACY_CONFIGS:
+            if os.path.exists(legacy):
+                return legacy
+    return cfg
 
 
 def runtime_file_path():
@@ -559,6 +561,26 @@ def open_push_socket(config):
     port = int(config.get("ethm_port", 7094))
     timeout = float(config.get("ethm_timeout", 2.0))
     sock = socket.create_connection((host, port), timeout=timeout)
+    # Check immediately if ETHM-1 sent a greeting or "Busy!" response
+    import select as _sel
+    ready, _, _ = _sel.select([sock], [], [], 0.5)
+    if ready:
+        try:
+            data = sock.recv(4096)
+            if not data:
+                sock.close()
+                raise ConnectionError("ETHM-1 closed push immediately (EOF)")
+            greeting = data.decode("ascii", errors="replace")
+            if "Busy" in greeting or "busy" in greeting:
+                sock.close()
+                raise ConnectionError(
+                    f"ETHM-1 is BUSY - another client is already connected on port {port}. "
+                    f"Check: DLOADX, GUARDX, or another bridge instance. "
+                    f"Raw: {data.hex(' ').upper()}"
+                )
+            log(f"push: ETHM-1 greeting: {data.hex(' ').upper()[:60]}")
+        except BlockingIOError:
+            pass
     sock.setblocking(False)
     return sock
 
@@ -1298,13 +1320,33 @@ def mqtt_read_packet(sock, timeout=3.0):
     return fixed[0], bytes(payload)
 
 
+def load_lb_mqtt_config():
+    """Load MQTT credentials from LoxBerry system config (auto-fills plugin config)."""
+    try:
+        import json as _json
+        with open(LB_MQTT_CONFIG, encoding="utf-8") as fh:
+            data = _json.load(fh)
+        # LoxBerry 3.x uses capitalized keys
+        host = (data.get("Hostname") or data.get("hostname") or "").strip()
+        port = int(data.get("Port") or data.get("port") or 1883)
+        user = (data.get("Username") or data.get("username") or "").strip()
+        pw   = (data.get("Password") or data.get("password") or "").strip()
+        if host:
+            return {"host": host, "port": port, "username": user, "password": pw}
+    except Exception:
+        pass
+    return {}
+
+
 def mqtt_connect(config, client_suffix="pub"):
-    host = str(config.get("mqtt_host", "localhost")).strip() or "localhost"
-    port = int(config.get("mqtt_port", 1883))
+    # Use plugin config; fall back to LoxBerry system MQTT config
+    lb = load_lb_mqtt_config()
+    host = str(config.get("mqtt_host", "") or lb.get("host", "localhost")).strip() or "localhost"
+    port = int(config.get("mqtt_port", 0) or lb.get("port", 1883))
     timeout = cfg_float(config, "mqtt_timeout", 3.0)
     keepalive = int(cfg_float(config, "mqtt_keepalive", 60.0))
-    username = str(config.get("mqtt_username", "")).strip()
-    password = str(config.get("mqtt_password", "")).strip()
+    username = str(config.get("mqtt_username", "") or lb.get("username", "")).strip()
+    password = str(config.get("mqtt_password", "") or lb.get("password", "")).strip()
     base_client_id = str(config.get("mqtt_client_id", "")).strip()
     if base_client_id:
         client_id = f"{base_client_id}-{client_suffix}"
@@ -1574,6 +1616,23 @@ def mqtt_process_control_messages(config, messages):
     return queued
 
 
+def send_heartbeat(config, started_at):
+    """Send periodic heartbeat to Loxone so it knows bridge is alive."""
+    uptime = int(time.time() - started_at)
+    values = {
+        "SATEL_HEARTBEAT": int(time.time()) % 1000000,
+        "SATEL_UPTIME": uptime,
+    }
+    try:
+        host = config["loxone_host"]
+        port = int(config["loxone_udp_port"])
+        for key, value in values.items():
+            udp_send(host, port, key, value)
+        mqtt_publish_values(config, values)
+    except Exception as exc:
+        log(f"heartbeat: ERROR {exc}")
+
+
 def send_status(config, values):
     host = config["loxone_host"]
     port = int(config["loxone_udp_port"])
@@ -1762,7 +1821,7 @@ def read_zone_statuses(config, transport=None):
     zones = configured_zones(config)
     payload = {}
 
-    if not cfg_bool(config, "poll_zones", False) or not zones:
+    if not cfg_bool(config, "poll_zones", True) or not zones:
         return payload
 
     try:
@@ -1994,7 +2053,9 @@ def main():
     last_error_sent = 0
     last_status_ok_at = 0
     last_push_frame_at = 0
+    last_push_keepalive = 0
     next_status_poll = 0
+    next_heartbeat = 0
     next_zone_poll = 0
     next_output_poll = 0
     next_temperature_poll = 0
@@ -2087,6 +2148,7 @@ def main():
                         push_sock = open_push_socket(config)
                         push_crypto = create_encryption_handler(config)
                         push_buffer = b""
+                        last_push_keepalive = 0
                         log("push: connected to ETHM")
                         update_runtime_state(
                             {
@@ -2199,6 +2261,32 @@ def main():
                             last_push_payload,
                         )
                         next_push_reconnect = now + max(1.0, push_reconnect_interval)
+
+                # Send keepalive CMD 0x7F every 5s to keep push connection alive
+                if push_sock is not None:
+                    _kp_now = time.time()
+                    _kp_iv = cfg_float(config, "push_keepalive_interval", 5.0)
+                    if _kp_now - last_push_keepalive >= _kp_iv:
+                        try:
+                            _kp = 0x7F
+                            _c = 0x147A
+                            for _b in bytes([_kp]):
+                                _c = ((_c << 1) & 0xFFFF) | (_c >> 15)
+                                _c ^= 0xFFFF
+                                _c = (_c + (_c >> 8) + _b) & 0xFFFF
+                            _r = bytes([_kp, _c >> 8, _c & 0xFF])
+                            _e = bytearray()
+                            for _b in _r:
+                                _e.extend([0xFE, 0xF0] if _b == 0xFE else [_b])
+                            _f = bytes([0xFE, 0xFE]) + bytes(_e) + bytes([0xFE, 0x0D])
+                            if push_crypto:
+                                _f = push_crypto.encrypt(_f)
+                            push_sock.sendall(_f)
+                            last_push_keepalive = _kp_now
+                            debug_log(config, "push: keepalive OK")
+                        except Exception as _kpe:
+                            debug_log(config, f"push: keepalive err: {_kpe}")
+
             else:
                 if push_sock is not None:
                     close_socket(push_sock)
@@ -2300,55 +2388,59 @@ def main():
                     f"status_interval={status_interval}s zones_interval={zone_interval}s "
                     f"outputs_interval={output_interval}s temperature_interval={temperature_interval}s"
                 )
-                transport = {"sock": push_sock, "buffer": push_buffer} if push_sock is not None and push_crypto is None else None
-                payload = read_core_statuses(config, transport)
-                if payload.get("SATEL_ONLINE"):
-                    last_status_ok_at = now
-                payload, _ready_zone_payload = add_ready_status(config, payload, last_zone_payload)
-                if transport is not None:
-                    push_buffer = transport.get("buffer", b"")
-                status_full_refresh_due = status_full_refresh_interval > 0 and now - last_status_full_refresh >= status_full_refresh_interval
-                if cfg_bool(config, "send_diagnostics", True) and status_full_refresh_due:
-                    status_age = int(now - last_status_ok_at) if last_status_ok_at else 999999
-                    push_age = int(now - last_push_frame_at) if last_push_frame_at else 999999
-                    status_ok = 1 if status_age <= watchdog_status_max_age else 0
-                    push_ok = 1
-                    if push_enabled:
-                        push_ok = 1 if (push_sock is not None and push_age <= watchdog_push_max_age) else 0
-                    watchdog_ok = 1 if (status_ok and push_ok) else 0
-                    payload["SATEL_DIAG_UPTIME"] = int(now - started_at)
-                    payload["SATEL_DIAG_LAST_STATUS_OK_AGE"] = status_age
-                    payload["SATEL_DIAG_LAST_PUSH_AGE"] = push_age
-                    payload["SATEL_DIAG_CONFIG_RELOAD_TS"] = int(now)
-                    payload["SATEL_WATCHDOG_OK"] = watchdog_ok
-                    payload["SATEL_WATCHDOG_STATUS_OK"] = status_ok
-                    payload["SATEL_WATCHDOG_PUSH_OK"] = push_ok
-                    payload["SATEL_WATCHDOG_STATUS_MAX_AGE"] = int(watchdog_status_max_age)
-                    payload["SATEL_WATCHDOG_PUSH_MAX_AGE"] = int(watchdog_push_max_age)
-                if send_status_on_change:
-                    payload_to_send = filter_changed_payload(payload, last_status_payload, status_full_refresh_due)
+                # Skip poll when push enabled but not connected - prevents TCP conflict
+                if push_enabled and push_sock is None:
+                    next_status_poll = now + 0.5
                 else:
-                    payload_to_send = dict(payload)
-                if payload_to_send:
-                    send_status(config, payload_to_send)
-                last_status_payload.update(payload)
-                push_payload = {
-                    "SATEL_PUSH_CONNECTED": 1 if push_sock is not None else 0,
-                    "SATEL_PUSH_RECONNECTS": push_reconnects,
-                }
-                push_payload_to_send = filter_changed_payload(push_payload, last_push_payload, status_full_refresh_due)
-                if push_payload_to_send:
-                    send_status(config, push_payload_to_send)
-                last_push_payload.update(push_payload)
-                if status_full_refresh_due:
-                    last_status_full_refresh = now
+                    transport = {"sock": push_sock, "buffer": push_buffer} if push_sock is not None and push_crypto is None else None
+                    payload = read_core_statuses(config, transport)
+                    if payload.get("SATEL_ONLINE"):
+                        last_status_ok_at = now
+                    payload, _ready_zone_payload = add_ready_status(config, payload, last_zone_payload)
+                    if transport is not None:
+                        push_buffer = transport.get("buffer", b"")
+                    status_full_refresh_due = status_full_refresh_interval > 0 and now - last_status_full_refresh >= status_full_refresh_interval
+                    if cfg_bool(config, "send_diagnostics", True) and status_full_refresh_due:
+                        status_age = int(now - last_status_ok_at) if last_status_ok_at else 999999
+                        push_age = int(now - last_push_frame_at) if last_push_frame_at else 999999
+                        status_ok = 1 if status_age <= watchdog_status_max_age else 0
+                        push_ok = 1
+                        if push_enabled:
+                            push_ok = 1 if (push_sock is not None and push_age <= watchdog_push_max_age) else 0
+                        watchdog_ok = 1 if (status_ok and push_ok) else 0
+                        payload["SATEL_DIAG_UPTIME"] = int(now - started_at)
+                        payload["SATEL_DIAG_LAST_STATUS_OK_AGE"] = status_age
+                        payload["SATEL_DIAG_LAST_PUSH_AGE"] = push_age
+                        payload["SATEL_DIAG_CONFIG_RELOAD_TS"] = int(now)
+                        payload["SATEL_WATCHDOG_OK"] = watchdog_ok
+                        payload["SATEL_WATCHDOG_STATUS_OK"] = status_ok
+                        payload["SATEL_WATCHDOG_PUSH_OK"] = push_ok
+                        payload["SATEL_WATCHDOG_STATUS_MAX_AGE"] = int(watchdog_status_max_age)
+                        payload["SATEL_WATCHDOG_PUSH_MAX_AGE"] = int(watchdog_push_max_age)
+                    if send_status_on_change:
+                        payload_to_send = filter_changed_payload(payload, last_status_payload, status_full_refresh_due)
+                    else:
+                        payload_to_send = dict(payload)
+                    if payload_to_send:
+                        send_status(config, payload_to_send)
+                    last_status_payload.update(payload)
+                    push_payload = {
+                        "SATEL_PUSH_CONNECTED": 1 if push_sock is not None else 0,
+                        "SATEL_PUSH_RECONNECTS": push_reconnects,
+                    }
+                    push_payload_to_send = filter_changed_payload(push_payload, last_push_payload, status_full_refresh_due)
+                    if push_payload_to_send:
+                        send_status(config, push_payload_to_send)
+                    last_push_payload.update(push_payload)
+                    if status_full_refresh_due:
+                        last_status_full_refresh = now
                 next_status_poll = now + max(0.5, status_interval)
 
             zones_enabled = cfg_bool(config, "poll_zones", False) and bool(configured_zones(config))
             outputs_enabled = cfg_bool(config, "poll_outputs", True) and bool(configured_outputs(config))
             temperatures_enabled = cfg_bool(config, "poll_temperatures", False) and bool(configured_temperature_zones(config))
 
-            if zones_enabled and now >= next_zone_poll:
+            if zones_enabled and now >= next_zone_poll and not (push_enabled and push_sock is None):
                 transport = {"sock": push_sock, "buffer": push_buffer} if push_sock is not None and push_crypto is None else None
                 zone_payload = read_zone_statuses(config, transport)
                 if transport is not None:
@@ -2376,7 +2468,7 @@ def main():
                     last_zone_full_refresh = now
                 next_zone_poll = now + max(0.2, zone_interval)
 
-            if outputs_enabled and now >= next_output_poll:
+            if outputs_enabled and now >= next_output_poll and not (push_enabled and push_sock is None):
                 transport = {"sock": push_sock, "buffer": push_buffer} if push_sock is not None and push_crypto is None else None
                 output_payload = read_output_statuses(config, transport)
                 if transport is not None:
@@ -2402,7 +2494,17 @@ def main():
                     send_status(config, temperature_payload)
                 next_temperature_poll = now + max(10.0, temperature_interval)
 
-            next_times = [next_status_poll]
+            # Heartbeat co 30s
+            heartbeat_interval = cfg_float(config, "heartbeat_interval", 30.0)
+            if heartbeat_interval > 0 and now >= next_heartbeat:
+                send_heartbeat(config, started_at)
+                next_heartbeat = now + heartbeat_interval
+            if next_heartbeat > 0:
+                next_times_base = [next_status_poll, next_heartbeat]
+            else:
+                next_times_base = [next_status_poll]
+
+            next_times = next_times_base
             if push_enabled:
                 next_times.append(next_push_reconnect if push_sock is None else now + 0.2)
             if zones_enabled:

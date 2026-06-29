@@ -1,43 +1,34 @@
-# Contributing
+# Jak zgłaszać problemy i współtworzyć projekt
 
-Dzieki za chec pomocy przy SATEL ETHM Bridge.
+## Zgłaszanie błędów
 
-## Jak testowac
+Przed zgłoszeniem sprawdź:
+1. Czy bridge jest uruchomiony: `satel_ethm_service.sh status`
+2. Logi: `tail -50 /opt/loxberry/log/plugins/satel_ethm/satel_ethm_bridge.log`
+3. Połączenie TCP z ETHM-1: `telnet <IP> 7094`
 
-1. Sforkuj repozytorium.
-2. Zrob branch z opisowa nazwa, np. `fix-control-queue` albo `feature-events-log`.
-3. Uruchom lokalne testy:
+Otwierając issue podaj:
+- Wersję pluginu (z `plugin.cfg`)
+- Wersję LoxBerry
+- Model centrali Satel i firmware ETHM-1
+- Relevantne linie z logu
 
-```bash
-python3 -m py_compile bin/satel_ethm_bridge.py webfrontend/htmlauth/index.cgi webfrontend/html/control.cgi
-python3 scripts/build_plugin_zip.py
+## Pull Requesty
+
+1. Forkuj repozytorium
+2. Stwórz branch: `git checkout -b feature/opis`
+3. Testuj na prawdziwej centrali jeśli możliwe
+4. Opisz zmiany w PR i zaktualizuj `CHANGELOG.md`
+
+## Struktura kodu
+
 ```
-
-4. Zainstaluj ZIP z katalogu `dist/` na testowym LoxBerry.
-5. Opisz w pull requescie:
-   - wersje LoxBerry,
-   - model centrali SATEL,
-   - model ETHM,
-   - czy wlaczone jest `Kodowanie Integracji`,
-   - co dokladnie bylo testowane.
-
-## Zasady zmian
-
-- Nie dodawaj do repo prywatnych konfiguracji, tokenow, kodow SATEL ani adresow IP z realnej instalacji.
-- Nie dodawaj pliku aktywnej konfiguracji `config.json`.
-- Nie zmieniaj domyslnie sciezki konfiguracji:
-
-```text
-/opt/loxberry/data/system/satel_ethm/config.json
+bin/satel_ethm_bridge.py    # Główny proces - protokół Satel, MQTT, UDP
+bin/satel_ethm_service.sh   # Wrapper start/stop dla LoxBerry
+daemon/satel_ethm           # Skrypt daemona rejestrowany w LoxBerry
+webfrontend/htmlauth/index.cgi  # Panel konfiguracyjny (Python CGI)
+webfrontend/html/control.cgi    # API sterowania (wywoływane przez panel)
+postinstall.sh              # Uruchamiany po instalacji
+preupdate.sh                # Uruchamiany przed upgrade (backup config)
+plugin.cfg                  # Metadane pluginu LoxBerry
 ```
-
-- Przy zmianach protokolu ETHM dodaj log diagnostyczny albo opis testu.
-- Przy zmianach XML sprawdz import w Loxone Config.
-- Przy zmianach sterowania opisz, czy komenda dotyczy partycji, wyjsc, bypass/blokad wejsc czy kasowania alarmu.
-
-## Styl
-
-- Kod Pythona ma pozostac bez dodatkowych zewnetrznych zaleznosci poza opcjonalnym `cryptography` dla kodowania ETHM.
-- Panel LoxBerry jest prostym CGI, bez frameworka.
-- Komunikaty w panelu piszemy po polsku.
-
